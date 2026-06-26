@@ -1,165 +1,140 @@
-from beam_class import Beam
-import transfer_matrices
-import atmospherics
-import components
+"""
+main.py
+=======
+Example FSO link budget using the refactored simulation pipeline.
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 
-w0 = 5e-6 # Waist radius in meters
-wavelength = 1550e-9 # Wavelength in meters
-beam_power = 0.150
-receiver_sens_threshold = -40  # Receiver sensitivity threshold in dBm
+from beam_class import Beam
+import transfer_matrices as tm
+import atmospherics as atm
+import components as comp
+from link_budget import LinkBudget
+from atmospherics.scintillation import scintillation
+
+# ── Link parameters ──────────────────────────────────────────────────────────
+WAVELENGTH = 1550e-9  # m
+BEAM_WAIST = 30e-2  # m
+TX_POWER = 1.0  # W
+DISTANCE = 1000.0  # m
+Cn2 = 1e-15  # m^(-2/3), moderate turbulence
+VISIBILITY = 1000.0  # m, light fog
+RECEIVER_RADIUS = 0.15  # m
+M2 = 1.1  # beam quality factor
+# ─────────────────────────────────────────────────────────────────────────────
 
 
+def build_link(distance, visibility, Cn2):
+    """Construct and run a single FSO link budget."""
+    beam = Beam.from_beam_waist(
+        waist_radius=BEAM_WAIST, wavelength=WAVELENGTH, power=TX_POWER, M2=M2
+    )
 
-beam = Beam.from_beam_waist(waist_radius=w0, wavelength=wavelength, power=beam_power)
-beam_after_scintillation = atmospherics.scintillation(beam, distance=3000, Cn2=20e-15, availability=None)
-print(f"last cdf value: {beam_after_scintillation['pdf']}")
+    link = LinkBudget(beam)
 
-fig, [ax1, ax2] = plt.subplots(2, 1, figsize=(10, 8))
-ax1.plot(beam_after_scintillation['intensity_values'], beam_after_scintillation['pdf'], label='PDF', linewidth=1, marker='o', markersize=2)
-ax2.plot(beam_after_scintillation['intensity_values'], beam_after_scintillation['cdf'], label='CDF', linewidth=1, marker='o', markersize=2)
-ax1.set_title('PDF of Intensity due to Scintillation')
-ax1.set_xlabel('Intensity (normalized)')
-ax1.set_ylabel('Probability Density Function (PDF)')
-ax1.axvline(x=1.0, color='r', linestyle='--', label='Mean intensity')
-ax1.grid()
-ax2.set_title('CDF of Intensity due to Scintillation')
-ax2.set_xlabel('Intensity (normalized)')
-ax2.set_ylabel('Cumulative Distribution Function (CDF)')
-ax2.axhline(y=0.999, color='r', linestyle='--', label='99.9% availability')
-ax2.grid()
-plt.tight_layout()
+    link.add_optic(
+        "Beam expander (f1=30mm, f2=60mm)",
+        lambda b: comp.beam_expander(b, f1=0.03, f2=0.06),
+    )
+
+    # link.add_optic(
+    #     "Aperture stop (r=0.05m)", lambda b: comp.aperture_stop(b, aperture_radius=0.05)
+    # )
+
+    # Free-space propagation
+    link.add_propagation(
+        f"Free space ({distance:.0f} m)", lambda b: b.propagate(tm.free_space(distance))
+    )
+
+    # Atmospheric effects
+    link.add_atmosphere(
+        f"Kim fog (V={visibility:.0f} m)",
+        lambda b: atm.kim_fog(b, distance=distance, visibility=visibility),
+    )
+
+    link.add_atmosphere(
+        f"Turbulence (Cn2={Cn2:.0e})",
+        lambda b: atm.turbulence(b, distance=distance, Cn2=Cn2),
+    )
+
+    return link.run()
+
+
+# ── Single link example ───────────────────────────────────────────────────────
+results = build_link(DISTANCE, VISIBILITY, Cn2)
+results.summary()
+
+# Receiver power and detector performance
+rx_power_w = comp.receiver(results.final_beam, RECEIVER_RADIUS)
+detector = comp.Detector(responsivity=0.8, bandwidth=1e9)
+print(f"\nReceiver aperture radius : {RECEIVER_RADIUS} m")
+print(
+    f"Received optical power   : {rx_power_w*1e6:.3f} µW  ({10*np.log10(rx_power_w/1e-3):.2f} dBm)"
+)
+print(f"SNR                      : {detector.snr_db(rx_power_w):.1f} dB")
+print(f"BER                      : {detector.ber(rx_power_w):.2e}")
+print(
+    f"Receiver sensitivity     : {detector.sensitivity(1e-9)*1e6:.3f} µW  ({10*np.log10(detector.sensitivity(1e-9)/1e-3):.2f} dBm)"
+)
+
+results.plot()
 plt.show()
 
-# # collimating thin lens, focal length 10mm
-# beam = beam.propagate(transfer_matrices.free_space(0.01))  # Propagate to the new waist after the lens
-# beam = beam.propagate(transfer_matrices.thin_lens(focal_length=0.01))
-# beam_collimated = beam.propagate_to_waist()  # Propagate to the new waist after the lens
-# print(f"collimated beam waist: {beam_collimated.waist_radius:.6e}")
-# # expand the beam using a beam expander with focal lengths f1 = 0.03 m and f2 = 0.06 m
-# expanded_beam = beam_collimated.propagate(transfer_matrices.beam_expander(f1=0.03, f2=0.06))
-# expanded_beam = expanded_beam.propagate_to_waist()  # Propagate to the new waist after the expander
 
-# #propagate the beam through free space for a distance of 1000 m
-# propagation_distance = 1000
-# propagated_beam = expanded_beam.propagate(transfer_matrices.free_space(propagation_distance))
-# print(f"Inital beam M2: {expanded_beam.M2:.6e}")
-# print(f"Inital beam waist: {expanded_beam.get_waist():.6e} m")
-# print(f"propagated_beam.current_position: {propagated_beam.current_position:.6e} m")
-# print(f"propagated_beam.q: {propagated_beam.q}")
-# print(f"propagated_beam.get_waist(): {propagated_beam.get_waist():.6e} m")
-# # apply turbulence effects to the beam over the propagation distance with a specified refractive index structure parameter Cn2
-# beam_with_turbulence = atmospherics.turbulence(propagated_beam, distance=propagation_distance, Cn2=1e-15)
-# print(f"Beam M2 after turbulence: {beam_with_turbulence.M2:.6e}")
+# ── Distance sweep across fog conditions ─────────────────────────────────────
+visibility_conditions = {
+    "Clear (10km)": 10000,
+    "Light fog (1km)": 1000,
+    "Moderate fog (500m)": 500,
+    "Dense fog (200m)": 200,
+}
+distances = np.linspace(1, 500000, 100)
 
-# Looping through range of distances with atmospheric effects to do link budget analysis
-visibility_conditions = {"Clear (10km)": 10000, "Light Fog (1km)": 1000, "Moderate Fog (500m)": 500, "Dense Fog (200m)": 200}
-distances = np.linspace(0.001, 5000, 100)  # Distances
-captured_powers = {}  # Reset captured powers for each visibility condition
-beam_waists = {}  # Reset beam waists for each visibility condition
-captured_fractions = {}  # Reset captured fractions for each visibility condition
-for label, visibility in visibility_conditions.items():
-    captured_powers[label] = []  # Initialize list for captured powers for this visibility condition
-    beam_waists[label] = []  # Initialize list for beam waists for this visibility condition
-    captured_fractions[label] = []  # Initialize list for captured fractions for this visibility condition
-    for distance in distances:
-        #New beam
-        beam = Beam.from_beam_waist(waist_radius=w0, wavelength=wavelength, power=beam_power)
+fig, [ax1, ax2] = plt.subplots(2, 1, figsize=(11, 8))
 
-        # collimating thin lens, focal length 10mm
-        beam = beam.propagate(transfer_matrices.free_space(0.01)) 
-        beam = beam.propagate(transfer_matrices.thin_lens(focal_length=0.01))
-        beam_collimated = beam.propagate_to_waist()  # Propagate to the new waist after the lens
+for label, vis in visibility_conditions.items():
+    rx_powers_dbm = []
+    rx_bers = []
 
-        # expand the beam using a beam expander with focal lengths f1 = 0.03 m and f2 = 0.06 m
-        expanded_beam = beam_collimated.propagate(transfer_matrices.beam_expander(f1=0.03, f2=0.06))
-        expanded_beam = expanded_beam.propagate_to_waist()  # Propagate to the new waist after the expander
+    for d in distances:
+        # slowly decrease cn2 with distance to simulate decreasing turbulence as it passes through the atmosphere using Hufnagel-Valley model
+        Cn2 = (
+            5.94e-53 * (21 / 27) ** 2 * d**10 * np.exp(-d / 1000)
+            + 2.7e-16 * np.exp(-d / 1500)
+            + 1.7e-14 * np.exp(-d / 100)
+        )
+        res = build_link(d, vis, Cn2)
+        rx_power = comp.receiver(res.final_beam, RECEIVER_RADIUS)
+        rx_power = max(rx_power, 1e-15)
 
-        # Propagate the beam through free space for the given distance
-        propagated_beam = expanded_beam.propagate(transfer_matrices.free_space(distance))
+        scint = scintillation(res.final_beam, distance=d, Cn2=Cn2, availability=0.999)
+        rx_power_dbm = 10 * np.log10(rx_power / 1e-3) - scint["fade_margin_db"]
 
-        # Apply atmospheric effects (fog) to the beam
-        beam_after_fog = atmospherics.kim_fog(propagated_beam, distance=distance, visibility=visibility)
+        rx_powers_dbm.append(rx_power_dbm)
+        rx_bers.append(detector.ber(rx_power))
 
-        beam_after_turbulence = atmospherics.turbulence(beam_after_fog, distance=distance, Cn2=1e-15)
+    ax1.plot(
+        distances, rx_powers_dbm, label=label, linewidth=1.5, marker="o", markersize=2
+    )
+    ax2.semilogy(
+        distances, rx_bers, label=label, linewidth=1.5, marker="o", markersize=2
+    )
 
-        # Calculate the power captured by a receiver with a radius of 0.15 m (150 mm)
-        receiver_radius = 0.15
-        captured_power = components.receiver(beam_after_turbulence, receiver_radius)
-        captured_power = max(captured_power, 1e-12)  # Ensure captured power is not zero to avoid log(0)
-        beam_waist = beam_after_turbulence.get_waist()
-        #convert to Watts to dBm
-        captured_power_dbm = 10 * np.log10(captured_power / 1e-3)  # Convert to dBm
-        scint = atmospherics.scintillation(beam_after_turbulence, distance=distance, Cn2=1e-15, availability=0.999)
-        effective_power_dbm = captured_power_dbm - scint['fade_margin_db']  # Adjust for fade margin
-        
-        # calc. captured fraction of beam waist area captured by receiver
-        receiver_area = np.pi * receiver_radius**2
-        beam_area = np.pi * beam_waist**2
-        captured_fraction = receiver_area / beam_area
-
-
-        # print(f"Distance: {distance:.2f} m, Captured Power: {captured_power:.6e} W, Captured Power: {captured_power_dbm:.2f} dBm")
-        captured_powers[label].append(effective_power_dbm)
-        beam_waists[label].append(beam_waist)
-        captured_fractions[label].append(captured_fraction)
-
-
-# Plotting the results for each visibility condition on the same graph
-fig, [ax1, ax2] = plt.subplots(2, 1, figsize=(10, 8))
-for label, visibility in visibility_conditions.items():
-    ax1.plot(distances, list(captured_powers[label]), label=f'Visibility: {visibility} m', linewidth=1, marker='o', markersize=2)
-    ax2.plot(distances, list(captured_fractions[label]), label=f'Visibility: {visibility} m', linewidth=1, marker='o', markersize=2)
-ax1.axhline(y=receiver_sens_threshold, color='r', linestyle='--', label='Receiver Sensitivity Threshold (-40 dBm)')
-ax1.set_title('Captured Power vs Distance with Atmospheric Effects')
-ax1.set_xlabel('Distance (m)')
-ax1.set_ylabel('Captured Power (dBm)')
-ax1.grid()
+ax1.axhline(y=-40, color="r", linestyle="--", label="Sensitivity threshold (−40 dBm)")
+ax1.set_title("Received power vs distance (with scintillation fade margin)")
+ax1.set_xlabel("Distance (m)")
+ax1.set_ylabel("Effective received power (dBm)")
+ax1.grid(True, alpha=0.4)
 ax1.legend()
-ax2.set_title('Beam Waist vs Distance with Atmospheric Effects')
-ax2.set_xlabel('Distance (m)')
-ax2.set_ylabel('Beam Waist (m)')
-ax2.grid()
+
+ax2.axhline(y=1e-9, color="r", linestyle="--", label="BER = 1e-9")
+ax2.set_title("BER vs distance")
+ax2.set_xlabel("Distance (m)")
+ax2.set_ylabel("BER")
+ax2.grid(True, alpha=0.4)
 ax2.legend()
 
-
 plt.tight_layout()
 plt.show()
-
-
-
-# #Propagate the beam through free space for a distance of 0.05 m
-# propagation_distance = 0.05
-# propagated_beam = beam.propagate(transfer_matrices.free_space(propagation_distance))
-# print(f"Initial beam width: {beam.get_waist():.6e} m")        # w0 = 70µm
-# print(f"After {propagation_distance} m: {propagated_beam.get_waist():.6e} m")       # should be much larger
-
-
-# # put beam through a thin lens with focal length f = 0.03 m (30 mm)
-# beam_after_lens = propagated_beam.propagate(transfer_matrices.thin_lens(0.03))
-# beam_at_new_waist = beam_after_lens.propagate_to_waist()
-# print(f"Beam waist after lens: {beam_at_new_waist.get_waist():.6e} m")  # should be smaller than before the lens
-
-# # Now put the beam through a beam expander with focal lengths f1 = 0.03 m and f2 = 0.06 m
-# expanded_beam = beam_at_new_waist.propagate(transfer_matrices.beam_expander(f1=0.03, f2=0.06))
-# expanded_beam = expanded_beam.propagate_to_waist()
-# print(f"Input to expander: {beam_at_new_waist.get_waist():.6e} m")   # ~94µm
-# print(f"After expander: {expanded_beam.get_waist():.6e} m")           # ~188µm
-
-# # Now let's put the expanded beam through fog with a visibility of 1000 m over a distance of 1000 m
-# print(f"Initial beam power: {beam.power:.6e} W")  # should be 1.0 W
-# beam_through_fog = atmospherics.kim_fog(expanded_beam, distance=1000, visibility=1000)
-# print(f"Beam power after 1 km of fog: {beam_through_fog.power:.6e} W")  # should be less than 1.0 W
-# print(f"Beam waist after fog: {beam_through_fog.get_waist():.6e} m")  # should be the same as before the fog
-
-# # Now let's put the beam through an aperture stop with a radius of 0.0001 m (100 µm)
-# aperture_radius = 0.0001
-# beam_after_aperture = components.aperture_stop(beam_through_fog, aperture_radius)
-# print(f"Beam waist after aperture stop: {beam_after_aperture.get_waist():.6e} m")  # should be the same as before the aperture
-# print(f"Beam power after aperture stop: {beam_after_aperture.power:.6e} W")  # should be less than the power after fog
-
-# # Now let's calculate the power captured by a receiver with a radius of 0.0001 m (100 µm)
-# receiver_radius = 0.0001
-# captured_power = components.receiver(beam_after_aperture, receiver_radius)
-# print(f"Power captured by receiver: {captured_power:.6e} W")

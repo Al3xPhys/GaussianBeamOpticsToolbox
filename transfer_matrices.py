@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def free_space(distance):
     """
     Returns the transfer matrix for free space propagation over a given distance.
@@ -12,6 +13,7 @@ def free_space(distance):
     """
     return np.array([[1, distance], [0, 1]])
 
+
 def thin_lens(focal_length):
     """
     Returns the transfer matrix for a thin lens with a given focal length.
@@ -22,7 +24,8 @@ def thin_lens(focal_length):
     Returns:
     numpy.ndarray: The 2x2 transfer matrix for a thin lens.
     """
-    return np.array([[1, 0], [-1/focal_length, 1]])
+    return np.array([[1, 0], [-1 / focal_length, 1]])
+
 
 def beam_expander(f1, f2, d=None):
     """
@@ -39,7 +42,9 @@ def beam_expander(f1, f2, d=None):
     # Transfer matrix for the first lens
     if d is None:
         # If distance is not provided, calculate it to make the system afocal
-        d = f1 + f2  # For an afocal system, the distance should be the sum of the focal lengths
+        d = (
+            f1 + f2
+        )  # For an afocal system, the distance should be the sum of the focal lengths
     lens1 = thin_lens(f1)
     # Transfer matrix for free space propagation between the lenses
     free_space_between = free_space(d)
@@ -47,3 +52,12 @@ def beam_expander(f1, f2, d=None):
     lens2 = thin_lens(f2)
     # Total transfer matrix is the product of the three matrices
     return lens2 @ free_space_between @ lens1
+
+
+def curved_mirror(radius_of_curvature):
+    """
+    Returns the transfer matrix for a curved mirror with a given radius of curvature.
+    Equivalent to a thin lens with f = R/2. Concave (focusing) mirror has R > 0.
+    """
+    f = radius_of_curvature / 2
+    return np.array([[1, 0], [-1 / f, 1]])
